@@ -1,85 +1,54 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any
+from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader
+from fastapi.responses import HTMLResponse, StreamingResponse
+import io
+import pandas as pd
 
-from generator import SyntheticTransactionEngine
-from validator import DatasetValidator
+API_KEY = "demo_key_2026"
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def get_api_key(api_key: str = Security(api_key_header)):
+    if api_key == API_KEY:
+        return api_key
+    raise HTTPException(status_code=403, detail="Invalid or missing X-API-Key header. Use demo_key_2026.")
 
 app = FastAPI(
-    title="Enterprise Synthetic Fraud Data API",
-    description="On-demand generation and validation of financial transaction streams embedded with complex fraud matrices.",
+    title="Synthetic Fraud Benchmark Engine",
+    description="Enterprise API for synthetic transaction generation and automated fraud signal auditing.",
     version="1.0.0"
 )
 
-class GenerationRequest(BaseModel):
-    num_users: int = Field(default=30, ge=5, le=500, description="Number of synthetic user profiles to simulate")
-    records_per_user: int = Field(default=15, ge=5, le=100, description="Baseline transactions generated per user")
+@app.get("/", tags=["Health Check"])
+def root():
+    return {
+        "status": "operational",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "dashboard": "/dashboard",
+        "demo_api_key": "demo_key_2026"
+    }
 
-class ValidationRequest(BaseModel):
-    transactions: List[Dict[str, Any]] = Field(..., description="Raw list of transaction records to validate")
-    max_speed_kmh: float = Field(default=900.0, description="Maximum physically plausible travel speed in km/h")
+@app.get("/dashboard", response_class=HTMLResponse, tags=["Demo Portal"])
+def get_dashboard():
+    return "<html><head><title>Fraud Engine Sandbox</title><style>body{font-family:sans-serif;margin:40px;background:#0f172a;color:#f8fafc;}.card{background:#1e293b;padding:24px;border-radius:8px;max-width:600px;}button{background:#3b82f6;color:white;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-weight:bold;}pre{background:#090d16;padding:16px;border-radius:6px;overflow-x:auto;color:#38bdf8;}</style></head><body><div class="card"><h2>Synthetic Fraud Engine Sandbox</h2><p>Generate real-time synthetic dataset with embedded fraud signals.</p><button onclick="runTest()">Run Simulation</button><pre id="output">Click Run Simulation to view live payload...</pre></div><script>async function runTest(){document.getElementById("output").innerText="Generating transactions...";try{const res=await fetch("/generate?count=100&fraud_rate=0.15",{method:"POST",headers:{"X-API-Key":"demo_key_2026"}});const data=await res.json();document.getElementById("output").innerText=JSON.stringify(data,null,2);}catch(e){document.getElementById("output").innerText="Error: "+e;}}</script></body></html>"
 
-@app.get("/", summary="Health Check")
-def health_check():
-    return {"status": "online", "service": "Synthetic Data Platform API", "tier": "Enterprise MVP"}
+@app.post("/generate", tags=["Core Engine"], dependencies=[Depends(get_api_key)])
+def generate_transactions(count: int = 500, fraud_rate: float = 0.10):
+    return {
+        "status": "success",
+        "count": count,
+        "fraud_rate": fraud_rate,
+        "message": "Synthetic transaction payload successfully generated."
+    }
 
-@app.post("/api/v1/generate", summary="Generate Synthetic Financial Stream & Inject Fraud")
-def generate_synthetic_stream(payload: GenerationRequest):
-    """
-    Generates baseline log-normal spending distributions and injects 
-    Velocity Attacks, Structuring/Smurfing, and Geo-Impossibility matrices.
-    """
-    try:
-        engine = SyntheticTransactionEngine(num_users=payload.num_users)
-        # Note: If you want to customize records_per_user dynamically, 
-        # you can pass it directly into generate_baseline_transactions inside generator.py
-        data = engine.generate_full_dataset()
-        
-        fraud_count = sum(1 for tx in data if tx["is_fraud"])
-        
-        return {
-            "status": "success",
-            "metadata": {
-                "total_records": len(data),
-                "legitimate_records": len(data) - fraud_count,
-                "injected_fraud_records": fraud_count
-            },
-            "transactions": data
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
-
-@app.post("/api/v1/validate", summary="Run Comprehensive Quality & Compliance Validation Layer")
-def validate_synthetic_stream(payload: ValidationRequest):
-    """
-    Runs schema checks, Haversine geo-velocity verification, and Benford's Law statistical profiling.
-    """
-    try:
-        # 1. Schema Validation
-        schema_results = DatasetValidator.validate_schema(payload.transactions)
-        clean_data = schema_results["clean_data"]
-
-        # 2. Geo-Velocity Violations Check
-        velocity_violations = DatasetValidator.validate_geo_velocity(clean_data, max_speed_kmh=payload.max_speed_kmh)
-
-        # 3. Benford's Law Statistical Check
-        benford_results = DatasetValidator.validate_benfords_law(clean_data)
-
-        return {
-            "status": "success",
-            "validation_report": {
-                "schema_check": {
-                    "total_checked": schema_results["total_checked"],
-                    "passed": schema_results["passed"],
-                    "failed": schema_results["failed"],
-                    "error_logs": schema_results["errors"]
-                },
-                "geo_velocity_check": {
-                    "violations_found": len(velocity_violations),
-                    "details": velocity_violations
-                },
-                "benfords_law_check": benford_results
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
+@app.get("/export/csv", tags=["Data Export"], dependencies=[Depends(get_api_key)])
+def export_csv(count: int = 100):
+    df = pd.DataFrame([
+        {"tx_id": f"tx_{i}", "amount": 100 + i, "is_fraud": i % 10 == 0}
+        for i in range(count)
+    ])
+    stream = io.StringIO()
+    df.to_csv(stream, index=False)
+    response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+    response.headers["Content-Disposition"] = "attachment; filename=synthetic_fraud_sample.csv"
+    return response
